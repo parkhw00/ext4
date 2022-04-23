@@ -21,13 +21,13 @@ test_ext4: $(OBJS)
 sample.dir: .FORCE
 	rm -Rf $@
 	mkdir $@
-	for i in $(seq 0 9); do \
+	for i in $$(seq 0 9); do \
 		ls -l > $@/sample$i.txt; \
 	done
 	for d in 0 1; do \
-		mkdir $@/dir$d; \
-		for i in $(seq 0 7); do \
-			ls -l > $@/dir$d/sample$i.txt; \
+		mkdir $@/dir$$d; \
+		for i in $$(seq 0 7); do \
+			ls -l > $@/dir$$d/sample$$i.txt; \
 		done; \
 	done
 
