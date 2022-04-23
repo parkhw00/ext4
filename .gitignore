@@ -1,0 +1,6 @@
+*~
+*.o
+*.swp
+.vscode/
+test_ext4
+sample.ext4
