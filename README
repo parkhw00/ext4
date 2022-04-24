@@ -1,6 +1,13 @@
 
 Simple ext4 filesystem reader. Not tested for all filesystem options.
 
+Build and test.
+
+  make sample.ext4
+  make
+  make test
+
+
 Example command to test.
 
   sudo ./test_ext4 -d debug.txt /dev/sda1 list /

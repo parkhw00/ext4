@@ -1,11 +1,15 @@
 
-TARGET += sample.ext4
 TARGET += test_ext4
 
 all: $(TARGET)
 
 test: .FORCE
-	./test_ext4 sample.ext4
+	./test_ext4 sample.ext4 list /
+	./test_ext4 sample.ext4 list /dir1
+	./test_ext4 sample.ext4 cat  /dir1/sample7.txt
+	./test_ext4 sample.ext4 list /dir1/big
+	./test_ext4 sample.ext4 cat  /dir1/big > big
+	diff sample.dir/dir1/big big
 
 OBJS += test.o
 OBJS += ext4.o
@@ -32,10 +36,11 @@ sample.dir: .FORCE
 			ls -lR > $@/dir$$d/sample$$i.txt; \
 		done; \
 	done
+	dd if=/dev/random of=sample.dir/dir1/big bs=1024 count=$$((48*1024))
 
 sample.ext4: sample.dir
 	rm -f $@
-	dd if=/dev/zero of=$@ bs=1024 seek=$$((4*1024)) count=0
+	dd if=/dev/zero of=$@ bs=1024 seek=$$((64*1024)) count=0
 	mkfs.ext4 -d $< $@
 
 .FORCE:

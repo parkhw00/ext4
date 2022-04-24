@@ -767,9 +767,6 @@ static uint32_t search_inode_index(struct ext4fs *e, const char *filename)
     char *tok;
     uint32_t inode_index = 2; // start from root inode index
 
-    debug("search inode index for \"%p\"\n", filename);
-    debug("search inode index for \"%p\"\n", str);
-    debug("search inode index for \"%s\"\n", str);
     tok = strtok(str, "/");
     while (tok)
     {
@@ -865,17 +862,13 @@ static int cmd_list(struct ext4fs *e, char **argv)
 
     if (!file)
         file = "/";
-    debug("listing directory. \"%p\"...\n", file);
 
     inode_index = search_inode_index(e, file);
-    debug("listing directory. \"%p\"...\n", file);
     debug("inode index %d\n", inode_index);
 
     read_inode(e, inode_index, &inode);
-    debug("listing directory. \"%p\"...\n", file);
     if (inode.i_mode & S_IFDIR)
     {
-        debug("listing directory. \"%p\"...\n", file);
         printf("listing directory. \"%s\"...\n", file);
         foreach_dir(e, inode_index, list_each_de, NULL);
     }
