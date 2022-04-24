@@ -11,6 +11,8 @@ OBJS += test.o
 OBJS += ext4.o
 
 CFLAGS += -Wall
+#CFLAGS += -ggdb -O0
+CFLAGS += -O2
 
 test_ext4: $(OBJS)
 	$(CC) -o $@ $(LDFLAGS) $^
@@ -27,7 +29,7 @@ sample.dir: .FORCE
 	for d in 0 1; do \
 		mkdir $@/dir$$d; \
 		for i in $$(seq 0 7); do \
-			ls -l > $@/dir$$d/sample$$i.txt; \
+			ls -lR > $@/dir$$d/sample$$i.txt; \
 		done; \
 	done
 

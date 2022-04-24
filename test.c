@@ -35,7 +35,7 @@ static void _fatal(const char *func, int line, const char *fmt, ...)
 {
     va_list ap;
 
-    fprintf(stderr, "fatal at %s(), line #%d. error %s(%d)\n", func, line, strerror(errno), errno);
+    fprintf(stderr, "fatal at %s(), line #%d. errno %s(%d)\n", func, line, strerror(errno), errno);
 
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -63,16 +63,21 @@ read_cb(void *priv, uint64_t offs, void *data, uint32_t size)
         fatal("read() failed. got %z, requested %u\n", got, size);
 }
 
+static FILE *debug_file;
+
 static void _vmessage(const char *func, int line, const char *format, va_list ap)
 {
     char *str = NULL;
     int ret;
 
+    if (!debug_file)
+        return;
+
     ret = vasprintf(&str, format, ap);
     if (ret < 0)
         fatal("vasprintf() failed.\n");
 
-    fprintf(stderr, "%24s %4d : %s", func, line, str);
+    fprintf(debug_file, "%24s %4d : %s", func, line, str);
     free(str);
 }
 
@@ -89,6 +94,9 @@ static void message_cb(void *priv, bool fat, const char *func, int line, const c
 {
     va_list ap;
 
+    if (fat)
+        debug_file = stderr;
+
     va_start(ap, format);
     _vmessage(func, line, format, ap);
     va_end(ap);
@@ -97,48 +105,79 @@ static void message_cb(void *priv, bool fat, const char *func, int line, const c
         exit(1);
 }
 
-static int dump(const char *filename)
-{
-    struct ext4fs *e;
-    struct fsimage i = {};
-
-    debug("dump %s\n", filename);
-
-    i.fd = open(filename, O_RDONLY);
-    if (i.fd < 0)
-        fatal("open(%s) failed.\n", filename);
-
-    i.priv = e = ext4fs_new(&i);
-    if (!e)
-        fatal("..\n");
-
-    ext4fs_set_message_callback(e, message_cb);
-    ext4fs_set_read_callback(e, read_cb);
-    ext4fs_load(e);
-    ext4fs_del(e);
-
-    close(i.fd);
-
-    return 0;
-}
+static struct ext4fs *e;
 
 int main(int argc, char **argv)
 {
-    int i;
+    char *opt_debug = NULL;
+    char *fs_filename = NULL;
 
-#if 0
     while (true)
     {
         int opt;
 
-        opt = getopt(argc, argv, "");
+        opt = getopt(argc, argv, "+d:");
         if (opt == -1)
             break;
-    }
-#endif
 
-    for (i = 1; i < argc; i++)
-        dump(argv[i]);
+        switch (opt)
+        {
+        default:
+            fprintf(stderr, "test_ext4 [<options> ...] <ext4-image> [<command> <command-arg> ...]\n"
+                            "\n"
+                            " options:\n"
+                            "   -d <filename>    : filename to save debug messages. \"-\" will print stderr.\n"
+                            "\n");
+            exit(1);
+
+        case 'd':
+            opt_debug = optarg;
+            break;
+        }
+    }
+
+    if (opt_debug)
+    {
+        if (!strcmp(opt_debug, "-"))
+            debug_file = stderr;
+        else
+        {
+
+            debug_file = fopen(opt_debug, "a");
+            if (!debug_file)
+                fatal("cannot open file for debug messages. \"%s\"\n", opt_debug);
+        }
+    }
+
+    if (argv[optind])
+        fs_filename = argv[optind++];
+
+    if (!fs_filename)
+        fatal("no filesystem filename.\n");
+    else
+    {
+        struct fsimage i = {};
+
+        debug("dump %s\n", fs_filename);
+
+        i.fd = open(fs_filename, O_RDONLY);
+        if (i.fd < 0)
+            fatal("open(%s) failed.\n", fs_filename);
+
+        i.priv = e = ext4fs_new(&i);
+        if (!e)
+            fatal("..\n");
+
+        ext4fs_set_message_callback(e, message_cb);
+        ext4fs_set_read_callback(e, read_cb);
+
+        ext4fs_load(e);
+        ext4fs_command(e, argv + optind);
+
+        ext4fs_del(e);
+
+        close(i.fd);
+    }
 
     return 0;
 }

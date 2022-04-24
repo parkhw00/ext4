@@ -250,7 +250,7 @@ static void do_read(struct ext4fs *e, uint64_t offs, void *data, uint32_t size)
 static char *arr2str(struct ext4fs *e, void *ptr, int i, int total, int esize)
 {
     char *s;
-    uint64_t d;
+    uint64_t d = 0;
 
     switch (esize)
     {
@@ -491,11 +491,16 @@ static uint64_t inode_offset(struct ext4fs *e, uint32_t inode_index)
 static void read_inode(struct ext4fs *e, uint32_t inode_index, struct inode *inode)
 {
     uint64_t offset;
+    uint32_t inode_size;
 
     offset = inode_offset(e, inode_index);
     debug("inode[%d] offset 0x%08llx\n", inode_index, offset);
 
-    do_read(e, offset, inode, e->sb.s_inode_size);
+    inode_size = e->sb.s_inode_size;
+    if (inode_size > sizeof(*inode))
+        inode_size = sizeof(*inode);
+
+    do_read(e, offset, inode, inode_size);
 
 #define print_i__(m, f) debug("(%02x) inode[%d].%-28s= 0x%0*llx(" f ")\n", \
                               (int)(long)&((struct inode *)NULL)->m,       \
@@ -676,6 +681,8 @@ static void *read_inode_data(struct ext4fs *e, uint32_t inode_index, uint64_t *s
 
         _read_data(e, eh, data, data_size);
     }
+    else
+        fatal("reading non extent inode data is not implemented.\n");
 
     debug("got data size 0x%08llx, from inode %u\n", data_size, inode_index);
 
@@ -696,7 +703,8 @@ struct dir_entry
  *  != 0 : stop for futher loop.
  */
 static void foreach_dir(struct ext4fs *e, uint32_t inode_index,
-                        int (*each_de)(struct ext4fs *e, struct dir_entry *de))
+                        int (*each_de)(struct ext4fs *e, void *priv, struct dir_entry *de),
+                        void *priv)
 {
     uint64_t i;
     uint64_t size;
@@ -717,7 +725,7 @@ static void foreach_dir(struct ext4fs *e, uint32_t inode_index,
             debug("de->name      \"%s\"\n", de->name);
         }
 
-        if (each_de && each_de(e, de) != 0)
+        if (each_de && each_de(e, priv, de) != 0)
             break;
 
         if (de->inode == 0 || de->name_len == 0)
@@ -728,25 +736,169 @@ static void foreach_dir(struct ext4fs *e, uint32_t inode_index,
     free(data);
 }
 
-static int list_all_each_de(struct ext4fs *e, struct dir_entry *de)
+struct search_inode_priv
 {
+    char *searching;
+    uint32_t inode_index;
+};
+
+static int search_inode_index_each_de(struct ext4fs *e, void *priv, struct dir_entry *de)
+{
+    struct search_inode_priv *search = priv;
+
+    if (de->inode == 0)
+        return 0;
+
+    debug("searching \"%s\", this \"%s\"\n", search->searching, de->name);
+    if (!strncmp(search->searching, de->name, de->name_len) &&
+        search->searching[de->name_len] == 0)
+    {
+        search->inode_index = de->inode;
+        debug("same. inode_index %d\n", de->inode);
+        return 1;
+    }
+
     return 0;
 }
 
-static void list_all(struct ext4fs *e)
+static uint32_t search_inode_index(struct ext4fs *e, const char *filename)
 {
-    foreach_dir(e, 2, NULL);
-    foreach_dir(e, 12, NULL);
+    char *str = strdup(filename);
+    char *tok;
+    uint32_t inode_index = 2; // start from root inode index
+
+    debug("search inode index for \"%p\"\n", filename);
+    debug("search inode index for \"%p\"\n", str);
+    debug("search inode index for \"%s\"\n", str);
+    tok = strtok(str, "/");
+    while (tok)
+    {
+        struct search_inode_priv search = {};
+
+        debug("tok \"%s\"\n", tok);
+        search.searching = tok;
+        foreach_dir(e, inode_index, search_inode_index_each_de, &search);
+
+        if (search.inode_index == 0)
+            fatal("cannot search \"%s\".\n", tok);
+
+        inode_index = search.inode_index;
+        tok = strtok(NULL, "/");
+    }
+
+    free(str);
+    debug("inode index %d\n", inode_index);
+    return inode_index;
 }
 
-static void cat(struct ext4fs *e, uint32_t inode_index)
+static void printf_inode(struct ext4fs *e, struct inode *inode, uint32_t inode_index,
+                         const char *name, uint32_t name_len)
 {
+    char ftype;
+    char buf[name_len + 1];
+
+    switch (inode->i_mode & 0xf000)
+    {
+    case S_IFIFO:
+        ftype = 'f';
+        break;
+    case S_IFCHR:
+        ftype = 'c';
+        break;
+    case S_IFDIR:
+        ftype = 'd';
+        break;
+    case S_IFBLK:
+        ftype = 'b';
+        break;
+    case S_IFREG:
+        ftype = '-';
+        break;
+    case S_IFLNK:
+        ftype = 'l';
+        break;
+    case S_IFSOCK:
+        ftype = 's';
+        break;
+    default:
+        ftype = '?';
+        break;
+    }
+
+    strncpy(buf, name, name_len);
+    buf[name_len] = 0;
+
+    printf("%7d %c%c%c%c%c%c%c%c%c%c %4d.%-4d %8llu %-s\n",
+           inode_index, ftype,
+           inode->i_mode & S_IRUSR ? 'r' : '-',
+           inode->i_mode & S_IWUSR ? 'w' : '-',
+           inode->i_mode & S_IXUSR ? 'x' : '-',
+           inode->i_mode & S_IRGRP ? 'r' : '-',
+           inode->i_mode & S_IWGRP ? 'w' : '-',
+           inode->i_mode & S_IXGRP ? 'x' : '-',
+           inode->i_mode & S_IROTH ? 'r' : '-',
+           inode->i_mode & S_IWOTH ? 'w' : '-',
+           inode->i_mode & S_IXOTH ? 'x' : '-',
+           inode->i_uid, inode->i_gid,
+           (long long)get64(inode->i_size),
+           buf);
+}
+
+static int list_each_de(struct ext4fs *e, void *priv, struct dir_entry *de)
+{
+    struct inode inode = {};
+
+    if (de->inode == 0)
+        return 0;
+
+    read_inode(e, de->inode, &inode);
+    printf_inode(e, &inode, de->inode, de->name, de->name_len);
+
+    return 0;
+}
+
+static int cmd_list(struct ext4fs *e, char **argv)
+{
+    char *file = argv[0];
+    uint32_t inode_index;
+    struct inode inode = {};
+
+    if (!file)
+        file = "/";
+    debug("listing directory. \"%p\"...\n", file);
+
+    inode_index = search_inode_index(e, file);
+    debug("listing directory. \"%p\"...\n", file);
+    debug("inode index %d\n", inode_index);
+
+    read_inode(e, inode_index, &inode);
+    debug("listing directory. \"%p\"...\n", file);
+    if (inode.i_mode & S_IFDIR)
+    {
+        debug("listing directory. \"%p\"...\n", file);
+        printf("listing directory. \"%s\"...\n", file);
+        foreach_dir(e, inode_index, list_each_de, NULL);
+    }
+    else
+        printf_inode(e, &inode, inode_index, file, strlen(file));
+
+    return 0;
+}
+
+static int cmd_cat(struct ext4fs *e, char **argv)
+{
+    char *file = argv[0];
     void *data;
     uint64_t size;
 
-    data = read_inode_data(e, inode_index, &size);
+    if (!file)
+        fatal("no file\n");
+
+    data = read_inode_data(e, search_inode_index(e, file), &size);
     write(1, data, size);
     free(data);
+
+    return 0;
 }
 
 int ext4fs_load(struct ext4fs *e)
@@ -754,9 +906,21 @@ int ext4fs_load(struct ext4fs *e)
     read_sb(e);
     read_bg(e);
 
-    list_all(e);
-    cat(e, 16);
+    return 0;
+}
 
+int ext4fs_command(struct ext4fs *e, char **argv)
+{
+    if (!argv[0])
+        return cmd_list(e, argv);
+
+    if (!strcmp(argv[0], "list"))
+        return cmd_list(e, argv + 1);
+
+    if (!strcmp(argv[0], "cat"))
+        return cmd_cat(e, argv + 1);
+
+    fatal("unknown command. \"%s\"\n", argv[0]);
     return 0;
 }
 
