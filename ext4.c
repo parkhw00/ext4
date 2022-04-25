@@ -251,6 +251,7 @@ static char *arr2str(struct ext4fs *e, void *ptr, int i, int total, int esize)
 {
     char *s;
     uint64_t d = 0;
+    int r;
 
     switch (esize)
     {
@@ -273,11 +274,14 @@ static char *arr2str(struct ext4fs *e, void *ptr, int i, int total, int esize)
     if (i + 1 != total)
     {
         char *n = arr2str(e, ptr, i + 1, total, esize);
-        asprintf(&s, "%0*llx %s", esize * 2, (long long)d, n);
+        r = asprintf(&s, "%0*llx %s", esize * 2, (long long)d, n);
         free(n);
     }
     else
-        asprintf(&s, "%0*llx", esize * 2, (long long)d);
+        r = asprintf(&s, "%0*llx", esize * 2, (long long)d);
+
+    if (r < 0)
+        fatal("asprintf() failed.\n");
 
     return s;
 }
@@ -598,44 +602,61 @@ static void dump_ee(struct ext4fs *e, struct extent *ee)
 #undef print_ee
 }
 
-static uint64_t _read_data(struct ext4fs *e, struct extent_header *eh,
-                           void *data, uint64_t remaining_size)
+static uint64_t read_data(struct ext4fs *e, struct extent_header *eh, struct extent *ee,
+                          void *data, uint64_t remaining_size,
+                          uint32_t start_block_index, uint32_t offset_in_block)
+{
+    uint64_t copied = 0;
+    int i;
+
+    for (i = 0; i < eh->eh_entries; i++)
+    {
+        uint64_t data_offset;
+        uint64_t read_size;
+
+        dump_ee(e, ee);
+
+        if (start_block_index < ee->ee_block + ee->ee_len)
+        {
+            if (ee->ee_block < start_block_index)
+                offset_in_block += e->block_size * start_block_index - ee->ee_block;
+
+            read_size = ee->ee_len * e->block_size - offset_in_block;
+            if (read_size > remaining_size)
+                read_size = remaining_size;
+
+            data_offset = get64(ee->ee_start) * e->block_size;
+            debug("read data size %llu from 0x%08llx\n", read_size, data_offset + offset_in_block);
+            do_read(e, data_offset + offset_in_block, data + copied, read_size);
+            remaining_size -= read_size;
+            copied += read_size;
+            offset_in_block = 0;
+
+            if (remaining_size == 0)
+                break;
+        }
+
+        ee++;
+    }
+
+    return copied;
+}
+
+static uint64_t read_eh(struct ext4fs *e, struct extent_header *eh,
+                        void *data, uint64_t remaining_size,
+                        uint32_t start_block_index, uint32_t offset_in_block)
 {
     uint64_t copied = 0;
 
+    debug("start_block_index 0x%08x, offset_in_block 0x%08x\n", start_block_index, offset_in_block);
     dump_eh(e, eh);
     if (eh->eh_magic != EH_MAGIC)
         fatal("wrong eh_magic. 0x%04x\n", eh->eh_magic);
 
     if (eh->eh_depth == 0)
-    {
-        struct extent *ee = (void *)&eh[1];
-        int i;
+        return read_data(e, eh, (void *)&eh[1], data, remaining_size,
+                start_block_index, offset_in_block);
 
-        for (i = 0; i < eh->eh_entries; i++)
-        {
-            uint64_t data_offset;
-            uint64_t read_size;
-
-            dump_ee(e, ee);
-
-            read_size = ee->ee_len * e->block_size;
-            if (read_size > remaining_size)
-                read_size = remaining_size;
-
-            data_offset = get64(ee->ee_start) * e->block_size;
-            debug("read data size %llu from 0x%08llx\n", read_size, data_offset);
-            do_read(e, data_offset, data + copied, read_size);
-            remaining_size -= read_size;
-            copied += read_size;
-
-            if (remaining_size == 0)
-                break;
-
-            ee++;
-        }
-    }
-    else
     {
         int i;
         struct extent_idx *ei = (void *)&eh[1];
@@ -644,14 +665,26 @@ static uint64_t _read_data(struct ext4fs *e, struct extent_header *eh,
         for (i = 0; i < eh->eh_entries; i++)
         {
             struct extent_header *leaf_eh;
+            bool check_next = false;
 
             dump_ei(e, ei);
 
-            do_read(e, get64(ei->ei_leaf) * e->block_size, leafbuf, e->block_size);
+            if (start_block_index <= ei->ei_block)
+                check_next = true;
+            else if (i + 1 == eh->eh_entries)
+                check_next = true;
+            else if (start_block_index < ei[1].ei_block)
+                check_next = true;
 
-            leaf_eh = (void *)leafbuf;
-            copied += _read_data(e, leaf_eh, data + copied, remaining_size);
-            remaining_size -= copied;
+            if (check_next)
+            {
+                do_read(e, get64(ei->ei_leaf) * e->block_size, leafbuf, e->block_size);
+
+                leaf_eh = (void *)leafbuf;
+                copied += read_eh(e, leaf_eh, data + copied, remaining_size,
+                        start_block_index, offset_in_block);
+                remaining_size -= copied;
+            }
 
             ei++;
         }
@@ -684,7 +717,7 @@ static void *read_inode_data(struct ext4fs *e, struct inode *inode, uint64_t *si
         if (eh->eh_magic != EH_MAGIC)
             fatal("wrong eh_magic. 0x%04x\n", eh->eh_magic);
 
-        _read_data(e, eh, data, data_size);
+        read_eh(e, eh, data, data_size, 0, 0);
     }
     else
         fatal("reading non extent inode data is not implemented.\n");
@@ -910,6 +943,7 @@ static int cmd_cat(struct ext4fs *e, char **argv)
     void *data;
     uint64_t size;
     struct inode inode = {};
+    int r;
 
     if (!file)
         fatal("no file\n");
@@ -917,7 +951,10 @@ static int cmd_cat(struct ext4fs *e, char **argv)
     read_inode(e, search_inode_index(e, file), &inode);
     data = read_inode_data(e, &inode, &size);
 
-    write(1, data, size);
+    r = write(1, data, size);
+    if (r < 0)
+        fatal("write() failed.\n");
+
     free(data);
 
     return 0;
