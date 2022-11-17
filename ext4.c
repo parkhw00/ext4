@@ -619,7 +619,7 @@ static uint64_t read_data(struct ext4fs *e, struct extent_header *eh, struct ext
         if (start_block_index < ee->ee_block + ee->ee_len)
         {
             if (ee->ee_block < start_block_index)
-                offset_in_block += e->block_size * start_block_index - ee->ee_block;
+                offset_in_block += e->block_size * (start_block_index - ee->ee_block);
 
             read_size = ee->ee_len * e->block_size - offset_in_block;
             if (read_size > remaining_size)
